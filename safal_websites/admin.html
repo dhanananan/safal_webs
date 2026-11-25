@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>My Leads</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    .bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 64px; }
+    .page { padding: 48px 0 96px; }
+    .page h1 { font-size: clamp(2rem, 5vw, 3rem); margin-bottom: 8px; }
+    .meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 24px 0 16px; }
+    .tools { display: flex; gap: 10px; flex-wrap: wrap; }
+    .tools input { padding: 10px 14px; font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; min-width: 220px; }
+    .tools input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+    table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+    th, td { text-align: left; padding: 14px 18px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    th { font-weight: 600; background: var(--bg-alt); position: sticky; top: 0; cursor: pointer; user-select: none; }
+    th:hover { color: var(--accent); }
+    th[aria-sort="ascending"]::after { content: " ↑"; }
+    th[aria-sort="descending"]::after { content: " ↓"; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover td { background: var(--bg); }
+    .state { padding: 40px 24px; text-align: center; color: var(--muted); }
+    .state.err { color: #c0392b; }
+    .state code { background: var(--bg-alt); padding: 2px 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container bar">
+      <a class="brand" href="/">Gunjana <span>&amp;</span> Safal</a>
+      <button class="btn btn-sm" id="refresh" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <main class="container page">
+    <p class="eyebrow">Admin</p>
+    <h1>My leads</h1>
+
+    <div class="meta">
+      <p class="muted" id="count" aria-live="polite">Loading…</p>
+      <div class="tools">
+        <input id="filter" type="search" placeholder="Search leads" aria-label="Search leads">
+        <button class="btn btn-sm" id="csv" type="button" style="background:transparent;color:var(--ink);border-color:var(--line)" disabled>Download CSV</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <div class="state" id="state">Loading leads…</div>
+      <table id="table" hidden><thead></thead><tbody></tbody></table>
+    </div>
+  </main>
+
+  <script>
+    const $ = (s) => document.querySelector(s);
+    const state = $("#state"), table = $("#table"), thead = $("thead"), tbody = $("tbody");
+    const countEl = $("#count"), filterEl = $("#filter"), csvBtn = $("#csv");
+
+    let rows = [], columns = [], sortKey = null, sortDir = 1;
+
+    // The API's response shape isn't known yet, so accept an array, or an object holding one.
+    function extractRows(data) {
+      if (Array.isArray(data)) return data;
+      if (data && typeof data === "object") {
+        const arr = Object.values(data).find(Array.isArray);
+        if (arr) return arr;
+        return [data];
+      }
+      return [];
+    }
+    const cell = (v) => v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+    const pretty = (k) => k.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").replace(/^./, (c) => c.toUpperCase());
+
+    function showMessage(html, isError) {
+      state.hidden = false; table.hidden = true;
+      state.className = "state" + (isError ? " err" : "");
+      state.innerHTML = html;
+    }
+
+    function render() {
+      const q = filterEl.value.trim().toLowerCase();
+      let view = rows.filter((r) => !q || columns.some((c) => cell(r[c]).toLowerCase().includes(q)));
+      if (sortKey) view = [...view].sort((a, b) => cell(a[sortKey]).localeCompare(cell(b[sortKey]), undefined, { numeric: true }) * sortDir);
+
+      countEl.textContent = view.length ? `Showing 1-${view.length} of ${rows.length}` : `Showing 0 of ${rows.length}`;
+      if (!view.length) return showMessage(rows.length ? "No leads match your search." : "No leads yet.");
+
+      state.hidden = true; table.hidden = false;
+      thead.innerHTML = ""; tbody.innerHTML = "";
+      const tr = document.createElement("tr");
+      columns.forEach((c) => {
+        const th = document.createElement("th");
+        th.textContent = pretty(c);
+        th.scope = "col";
+        if (c === sortKey) th.setAttribute("aria-sort", sortDir === 1 ? "ascending" : "descending");
+        th.addEventListener("click", () => { sortDir = sortKey === c ? -sortDir : 1; sortKey = c; render(); });
+        tr.appendChild(th);
+      });
+      thead.appendChild(tr);
+      view.forEach((r) => {
+        const row = document.createElement("tr");
+        columns.forEach((c) => { const td = document.createElement("td"); td.textContent = cell(r[c]); row.appendChild(td); });
+        tbody.appendChild(row);
+      });
+    }
+
+    async function load() {
+      showMessage("Loading leads…");
+      csvBtn.disabled = true;
+      try {
+        const res = await fetch("/api/leads", { headers: { Accept: "application/json" }, cache: "no-store" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          showMessage("", true);
+          state.textContent = data.error || "Couldn't load leads.";
+          if (data.detail) {
+            const small = document.createElement("small");
+            small.style.display = "block";
+            small.style.marginTop = "8px";
+            small.textContent = data.detail;
+            state.appendChild(small);
+          }
+          return;
+        }
+        rows = extractRows(data).filter((r) => r && typeof r === "object");
+        columns = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+        sortKey = null;
+        csvBtn.disabled = !rows.length;
+        render();
+      } catch (err) {
+        showMessage("Couldn't reach the server. Is it running?", true);
+      }
+    }
+
+    function downloadCsv() {
+      const esc = (v) => `"${cell(v).replace(/"/g, '""')}"`;
+      const lines = [columns.map(esc).join(","), ...rows.map((r) => columns.map((c) => esc(r[c])).join(","))];
+      const url = URL.createObjectURL(new Blob([lines.join("\r\n")], { type: "text/csv" }));
+      const a = Object.assign(document.createElement("a"), { href: url, download: "leads.csv" });
+      a.click(); URL.revokeObjectURL(url);
+    }
+
+    $("#refresh").addEventListener("click", load);
+    filterEl.addEventListener("input", render);
+    csvBtn.addEventListener("click", downloadCsv);
+    load();
+  </script>
+</body>
+</html>
